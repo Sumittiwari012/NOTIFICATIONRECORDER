@@ -1,7 +1,10 @@
 package com.example.notifreader;
 
+import android.Manifest;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.widget.Button;
@@ -21,6 +24,11 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         SharedPreferences prefs = getSharedPreferences("prefs", MODE_PRIVATE);
 
+        // Android 13+: allow the "running" notification to show
+        if (Build.VERSION.SDK_INT >= 33) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
+        }
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(48, 96, 48, 48);
@@ -29,6 +37,12 @@ public class MainActivity extends AppCompatActivity {
         grant.setText("Grant notification access");
         grant.setOnClickListener(v ->
                 startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
+
+        Button battery = new Button(this);
+        battery.setText("Turn off battery restrictions");
+        battery.setOnClickListener(v -> startActivity(new Intent(
+                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                Uri.parse("package:" + getPackageName()))));
 
         Switch speak = new Switch(this);
         speak.setText("Read notifications aloud");
@@ -42,6 +56,7 @@ public class MainActivity extends AppCompatActivity {
         scroll.addView(list);
 
         root.addView(grant);
+        root.addView(battery);
         root.addView(speak);
         root.addView(scroll);
         setContentView(root);
