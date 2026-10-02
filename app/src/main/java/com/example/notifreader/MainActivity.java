@@ -3,6 +3,7 @@ package com.example.notifreader;
 import android.Manifest;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -11,13 +12,15 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Switch;
+import android.widget.TableLayout;
+import android.widget.TableRow;
 import android.widget.TextView;
 
 import androidx.appcompat.app.AppCompatActivity;
 
 public class MainActivity extends AppCompatActivity {
 
-    private TextView list;
+    private TableLayout table;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -50,10 +53,11 @@ public class MainActivity extends AppCompatActivity {
         speak.setOnCheckedChangeListener((b, on) ->
                 prefs.edit().putBoolean("speak", on).apply());
 
-        list = new TextView(this);
-        list.setTextSize(15f);
+        table = new TableLayout(this);
+        table.setStretchAllColumns(true);
+        table.setPadding(0, 24, 0, 0);
         ScrollView scroll = new ScrollView(this);
-        scroll.addView(list);
+        scroll.addView(table);
 
         root.addView(grant);
         root.addView(battery);
@@ -65,11 +69,52 @@ public class MainActivity extends AppCompatActivity {
         render();
     }
 
+    private TextView cell(String text, boolean bold) {
+        TextView tv = new TextView(this);
+        tv.setText(text);
+        tv.setTextSize(15f);
+        tv.setPadding(8, 12, 8, 4);
+        if (bold) tv.setTypeface(null, Typeface.BOLD);
+        return tv;
+    }
+
     private void render() {
+        table.removeAllViews();
+
+        // Header
+        TableRow header = new TableRow(this);
+        header.addView(cell("Source", true));
+        header.addView(cell("Name", true));
+        header.addView(cell("Amount", true));
+        table.addView(header);
+
         if (NotificationLog.items.isEmpty()) {
-            list.setText("No notifications yet.");
-        } else {
-            list.setText(String.join("\n\n", NotificationLog.items));
+            TextView empty = new TextView(this);
+            empty.setText("No payments recorded yet.");
+            empty.setPadding(8, 24, 8, 8);
+            table.addView(empty);
+            return;
+        }
+
+        for (NotificationLog.Entry e : NotificationLog.items) {
+            TableRow row = new TableRow(this);
+            row.addView(cell(e.source, false));
+            row.addView(cell(e.name.isEmpty() ? "-" : e.name, false));
+            row.addView(cell(e.amount, true));
+            table.addView(row);
+
+            // Date and time under each record
+            TableRow timeRow = new TableRow(this);
+            TextView time = new TextView(this);
+            time.setText(e.time);
+            time.setTextSize(12f);
+            time.setAlpha(0.6f);
+            time.setPadding(8, 0, 8, 20);
+            TableRow.LayoutParams lp = new TableRow.LayoutParams();
+            lp.span = 3;
+            time.setLayoutParams(lp);
+            timeRow.addView(time);
+            table.addView(timeRow);
         }
     }
 
