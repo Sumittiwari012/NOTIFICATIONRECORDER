@@ -6,11 +6,13 @@ import android.app.NotificationManager;
 import android.content.ComponentName;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
+import android.media.AudioAttributes;
 import android.os.Build;
 import android.os.Bundle;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -92,8 +94,34 @@ public class NotificationReaderService extends NotificationListenerService
 
     @Override
     public void onInit(int status) {
-        ttsReady = status == TextToSpeech.SUCCESS;
-        if (ttsReady) tts.setLanguage(Locale.getDefault());
+        if (status != TextToSpeech.SUCCESS) {
+            NotificationLog.add("WARNING: voice engine failed to start");
+            return;
+        }
+
+        // Try phone language, then Indian English, then US English
+        int r = tts.setLanguage(Locale.getDefault());
+        if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
+            r = tts.setLanguage(new Locale("en", "IN"));
+            if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
+                tts.setLanguage(Locale.US);
+            }
+        }
+
+        tts.setAudioAttributes(new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build());
+
+        tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+            @Override public void onStart(String id) { }
+            @Override public void onDone(String id) { }
+            @Override public void onError(String id) {
+                NotificationLog.add("WARNING: speech failed for a notification");
+            }
+        });
+
+        ttsReady = true;
     }
 
     // Called when Android connects us to the notification stream
@@ -176,9 +204,21 @@ public class NotificationReaderService extends NotificationListenerService
         NotificationLog.add(appName + ": " + title + " - " + text);
 
         SharedPreferences prefs = getSharedPreferences("prefs", MODE_PRIVATE);
-        if (prefs.getBoolean("speak", true) && ttsReady) {
-            tts.speak(appName + ". " + title + ". " + text,
-                    TextToSpeech.QUEUE_ADD, null, sbn.getKey());
+        if (prefs.getBoolean("speak", true)) {
+            if (!ttsReady) {
+                NotificationLog.add("WARNING: voice engine not ready");
+                return;
+            }
+            // Make currency symbols readable for the voice engine
+            String spoken = (appName + ". " + title + ". " + text)
+                    .replace("\u20B9", " rupees ")
+                    .replace("Rs.", " rupees ")
+                    .replace("Rs ", " rupees ");
+            int res = tts.speak(spoken, TextToSpeech.QUEUE_ADD, null,
+                    sbn.getKey() + "_" + System.currentTimeMillis());
+            if (res != TextToSpeech.SUCCESS) {
+                NotificationLog.add("WARNING: speak() was rejected");
+            }
         }
     }
 
