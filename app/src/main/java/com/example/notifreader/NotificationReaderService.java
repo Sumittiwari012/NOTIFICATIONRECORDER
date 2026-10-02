@@ -1,5 +1,7 @@
 package com.example.notifreader;
-
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -21,7 +23,97 @@ public class NotificationReaderService extends NotificationListenerService
 
     private TextToSpeech tts;
     private boolean ttsReady = false;
+    private static final Set<String> ALLOWED = new HashSet<>(Arrays.asList(
+    // Google Pay
+    "com.google.android.apps.nbu.paisa.user",
 
+    // PhonePe
+    "com.phonepe.app",
+
+    // Paytm
+    "net.one97.paytm",
+
+    // WhatsApp
+    "com.whatsapp",
+
+    // BHIM
+    "in.org.npci.upiapp",
+
+    // Amazon Pay
+    "in.amazon.mShop.android.shopping",
+
+    // CRED
+    "com.dreamplug.androidapp",
+
+    // Mobikwik
+    "com.mobikwik_new",
+
+    // Freecharge
+    "com.freecharge.android",
+
+    // Airtel Thanks
+    "com.myairtelapp",
+
+    // Samsung Wallet / Samsung Pay
+    "com.samsung.android.spay",
+
+    // ICICI iMobile
+    "com.csam.icici.bank.imobile",
+
+    // SBI YONO
+    "com.sbi.lotusintouch",
+
+    // HDFC MobileBanking
+    "com.snapwork.hdfc",
+
+    // Axis Mobile
+    "com.axis.mobile",
+
+    // Kotak
+    "com.kotak.mobile.banking",
+
+    // Bank of Baroda
+    "com.bankofbaroda.mconnect",
+
+    // IDFC FIRST Bank
+    "com.idfcfirstbank.optimus",
+
+    // IndusInd Bank
+    "com.indusind.indusmobile",
+
+    // Yes Bank
+    "com.yesbank.app",
+
+    // Federal Bank
+    "com.federalbank.mobile",
+
+    // AU Small Finance Bank
+    "in.co.aubank.au0101",
+
+    // RBL Bank
+    "com.rblbank.mobank",
+
+    // Bandhan Bank
+    "com.bandhan.mbandhan",
+
+    // Union Bank of India
+    "com.infrasoft.unionbank",
+
+    // Canara Bank
+    "com.canarabank.mobility",
+
+    // Punjab National Bank
+    "com.Version1",
+
+    // Indian Bank
+    "com.IndianBank.IndOASIS",
+
+    // Bank of India
+    "com.bankofindia.upi",
+
+    // Central Bank of India
+    "com.centrallibank.mobilebanking"
+));
     @Override
     public void onCreate() {
         super.onCreate();
@@ -74,6 +166,7 @@ public class NotificationReaderService extends NotificationListenerService
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
         if (sbn.getPackageName().equals(getPackageName())) return; // ignore our own
+        if (!ALLOWED.contains(sbn.getPackageName())) return;
         if ((sbn.getNotification().flags & Notification.FLAG_ONGOING_EVENT) != 0) return;
 
         Bundle extras = sbn.getNotification().extras;
