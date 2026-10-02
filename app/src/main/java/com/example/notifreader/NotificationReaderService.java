@@ -33,9 +33,6 @@ public class NotificationReaderService extends NotificationListenerService
     // Paytm
     "net.one97.paytm",
 
-    // WhatsApp
-    "com.whatsapp",
-
     // BHIM
     "in.org.npci.upiapp",
 
