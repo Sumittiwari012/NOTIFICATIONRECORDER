@@ -26,10 +26,6 @@ public class NotificationReaderService extends NotificationListenerService
 
     private static final String CHANNEL_ID = "reader_status";
 
-    // true  = store only money RECEIVED (paid you / received / credited)
-    // false = store any notification that has an amount
-    private static final boolean ONLY_RECEIVED = true;
-
     private TextToSpeech tts;
     private boolean ttsReady = false;
     private final Set<String> seen = new HashSet<>();
@@ -60,50 +56,21 @@ public class NotificationReaderService extends NotificationListenerService
     private static final Pattern OTP = Pattern.compile(
             "(?<![a-z])otp(?![a-z])|one[- ]time password", Pattern.CASE_INSENSITIVE);
 
-    // Grouped summaries such as "5 messages | Unread" carry no real message
+    // Placeholders shown when the Messaging app hides the real text:
+    // "Unread", "1 message", "New message", "5 messages | Unread", ...
     private static final Pattern SUMMARY = Pattern.compile(
-            "^\\d+\\s+(?:new\\s+)?messages?\\b", Pattern.CASE_INSENSITIVE);
+            "^\\s*(?:\\d+\\s+(?:new\\s+)?messages?\\b.*"
+                    + "|(?:new\\s+)?messages?"
+                    + "|\\d*\\s*unread"
+                    + "|.{0,20}\\|\\s*unread"
+                    + "|(?:sensitive|content).{0,40}hidden.*)\\s*$",
+            Pattern.CASE_INSENSITIVE);
 
     // SMS apps: bank alerts arrive here. Source shown = the SMS sender.
     private static final Set<String> SMS_APPS = new HashSet<>(Arrays.asList(
             "com.android.mms",                    // Xiaomi / MIUI "Messaging"
             "com.google.android.apps.messaging",  // Google Messages
             "com.samsung.android.messaging"       // Samsung Messages
-    ));
-
-    private static final Set<String> ALLOWED = new HashSet<>(Arrays.asList(
-            "com.android.mms",                        // SMS: Xiaomi Messaging
-            "com.google.android.apps.messaging",      // SMS: Google Messages
-            "com.samsung.android.messaging",          // SMS: Samsung Messages
-            "com.google.android.apps.nbu.paisa.user", // Google Pay
-            "com.phonepe.app",                        // PhonePe
-            "net.one97.paytm",                        // Paytm
-            "in.org.npci.upiapp",                     // BHIM
-            "in.amazon.mShop.android.shopping",       // Amazon Pay
-            "com.dreamplug.androidapp",               // CRED
-            "com.mobikwik_new",                       // Mobikwik
-            "com.freecharge.android",                 // Freecharge
-            "com.myairtelapp",                        // Airtel Thanks
-            "com.samsung.android.spay",               // Samsung Wallet / Pay
-            "com.csam.icici.bank.imobile",            // ICICI iMobile
-            "com.sbi.lotusintouch",                   // SBI YONO
-            "com.snapwork.hdfc",                      // HDFC MobileBanking
-            "com.axis.mobile",                        // Axis Mobile
-            "com.kotak.mobile.banking",               // Kotak
-            "com.bankofbaroda.mconnect",              // Bank of Baroda
-            "com.idfcfirstbank.optimus",              // IDFC FIRST Bank
-            "com.indusind.indusmobile",               // IndusInd Bank
-            "com.yesbank.app",                        // Yes Bank
-            "com.federalbank.mobile",                 // Federal Bank
-            "in.co.aubank.au0101",                    // AU Small Finance Bank
-            "com.rblbank.mobank",                     // RBL Bank
-            "com.bandhan.mbandhan",                   // Bandhan Bank
-            "com.infrasoft.unionbank",                // Union Bank of India
-            "com.canarabank.mobility",                // Canara Bank
-            "com.Version1",                           // Punjab National Bank
-            "com.IndianBank.IndOASIS",                // Indian Bank
-            "com.bankofindia.upi",                    // Bank of India
-            "com.centrallibank.mobilebanking"         // Central Bank of India
     ));
 
     @Override
@@ -182,7 +149,6 @@ public class NotificationReaderService extends NotificationListenerService
     public void onNotificationPosted(StatusBarNotification sbn) {
         String pkg = sbn.getPackageName();
         if (pkg.equals(getPackageName())) return; // ignore our own
-        if (!ALLOWED.contains(pkg)) return;
         int flags = sbn.getNotification().flags;
         if ((flags & Notification.FLAG_ONGOING_EVENT) != 0) return;
         if ((flags & Notification.FLAG_GROUP_SUMMARY) != 0) return;
@@ -199,6 +165,8 @@ public class NotificationReaderService extends NotificationListenerService
         }
         if (title.isEmpty() && text.isEmpty()) return;
         if (SUMMARY.matcher(text).find()) return;
+        // An SMS notification with no text has nothing to record
+        if (SMS_APPS.contains(pkg) && text.isEmpty()) return;
 
         // Source is required: drop if the app name can't be found
         String appName;
@@ -220,24 +188,27 @@ public class NotificationReaderService extends NotificationListenerService
         if (!seen.add(id)) return;
 
         String full = title + " " + text;
+
+        // OTPs are never stored or announced
+        if (OTP.matcher(full).find()) return;
+
         String time = new SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault())
                 .format(new Date(sbn.getPostTime()));
 
+        // A payment = has an amount AND says money was received
         Matcher am = AMOUNT.matcher(full);
-        if (am.find()) {
-            // ---- Payment: needs an amount ----
-            if (ONLY_RECEIVED) {
-                if (!RECEIVED.matcher(full).find()) return;
-                if (NOT_RECEIVED.matcher(full).find()) return;
-            }
+        boolean isPayment = am.find()
+                && RECEIVED.matcher(full).find()
+                && !NOT_RECEIVED.matcher(full).find();
+
+        if (isPayment) {
+            // ---- Payments tab ----
             String amount = "\u20B9" + am.group(1);
             String name = extractName(full);   // optional
             NotificationLog.add(new NotificationLog.Entry(source, name, amount, time));
             announce(sbn.getKey(), appName + ". " + title + ". " + text);
         } else {
-            // ---- Normal message: no amount ----
-            if (OTP.matcher(full).find()) return;   // never keep OTP messages
-
+            // ---- Normal messages tab: everything else ----
             String message = SMS_APPS.contains(pkg)
                     ? text : (title.isEmpty() ? text : title + ": " + text);
             if (message.isEmpty()) message = title;
