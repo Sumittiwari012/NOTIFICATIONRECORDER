@@ -56,6 +56,14 @@ public class NotificationReaderService extends NotificationListenerService
                     + "(?=\\s+(?:on|via|using|to|ref|upi|vpa|a/c|with)\\b|[.,;(]|\\d|$)",
             Pattern.CASE_INSENSITIVE);
 
+    // Normal messages containing "otp" are ignored
+    private static final Pattern OTP = Pattern.compile(
+            "(?<![a-z])otp(?![a-z])|one[- ]time password", Pattern.CASE_INSENSITIVE);
+
+    // Grouped summaries such as "5 messages | Unread" carry no real message
+    private static final Pattern SUMMARY = Pattern.compile(
+            "^\\d+\\s+(?:new\\s+)?messages?\\b", Pattern.CASE_INSENSITIVE);
+
     // SMS apps: bank alerts arrive here. Source shown = the SMS sender.
     private static final Set<String> SMS_APPS = new HashSet<>(Arrays.asList(
             "com.android.mms",                    // Xiaomi / MIUI "Messaging"
@@ -162,24 +170,41 @@ public class NotificationReaderService extends NotificationListenerService
         return name;
     }
 
+    private void announce(String key, String what) {
+        SharedPreferences prefs = getSharedPreferences("prefs", MODE_PRIVATE);
+        if (prefs.getBoolean("speak", true) && ttsReady) {
+            if (what.length() > 3000) what = what.substring(0, 3000);
+            tts.speak(what, TextToSpeech.QUEUE_ADD, null, key);
+        }
+    }
+
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
-        if (sbn.getPackageName().equals(getPackageName())) return; // ignore our own
-        if (!ALLOWED.contains(sbn.getPackageName())) return;
-        if ((sbn.getNotification().flags & Notification.FLAG_ONGOING_EVENT) != 0) return;
+        String pkg = sbn.getPackageName();
+        if (pkg.equals(getPackageName())) return; // ignore our own
+        if (!ALLOWED.contains(pkg)) return;
+        int flags = sbn.getNotification().flags;
+        if ((flags & Notification.FLAG_ONGOING_EVENT) != 0) return;
+        if ((flags & Notification.FLAG_GROUP_SUMMARY) != 0) return;
 
         Bundle extras = sbn.getNotification().extras;
         CharSequence t = extras.getCharSequence(Notification.EXTRA_TITLE);
         CharSequence x = extras.getCharSequence(Notification.EXTRA_TEXT);
-        String title = t == null ? "" : t.toString();
-        String text = x == null ? "" : x.toString();
-        if (title.trim().isEmpty() && text.trim().isEmpty()) return;
+        CharSequence b = extras.getCharSequence(Notification.EXTRA_BIG_TEXT);
+        String title = t == null ? "" : t.toString().trim();
+        String text = x == null ? "" : x.toString().trim();
+        // Prefer the expanded text: it holds the complete message
+        if (b != null && b.toString().trim().length() > text.length()) {
+            text = b.toString().trim();
+        }
+        if (title.isEmpty() && text.isEmpty()) return;
+        if (SUMMARY.matcher(text).find()) return;
 
         // Source is required: drop if the app name can't be found
         String appName;
         try {
             appName = getPackageManager().getApplicationLabel(
-                    getPackageManager().getApplicationInfo(sbn.getPackageName(), 0)).toString();
+                    getPackageManager().getApplicationInfo(pkg, 0)).toString();
         } catch (Exception e) {
             return;
         }
@@ -187,40 +212,38 @@ public class NotificationReaderService extends NotificationListenerService
 
         // For SMS apps, the source is the sender (e.g. "Punjab National Bank")
         String source = appName;
-        if (SMS_APPS.contains(sbn.getPackageName()) && !title.trim().isEmpty()) {
-            source = title.trim();
-        }
-
-        String full = title + " " + text;
-
-        // Amount is required: drop if none found
-        Matcher am = AMOUNT.matcher(full);
-        if (!am.find()) return;
-        String amount = "\u20B9" + am.group(1);
-
-        // Only money received (can be switched off with ONLY_RECEIVED)
-        if (ONLY_RECEIVED) {
-            if (!RECEIVED.matcher(full).find()) return;
-            if (NOT_RECEIVED.matcher(full).find()) return;
-        }
+        if (SMS_APPS.contains(pkg) && !title.isEmpty()) source = title;
 
         // Ignore the same notification being posted again (updates)
         String id = sbn.getKey() + sbn.getPostTime();
         if (seen.size() > 500) seen.clear();
         if (!seen.add(id)) return;
 
-        // Name is optional
-        String name = extractName(full);
-
+        String full = title + " " + text;
         String time = new SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault())
                 .format(new Date(sbn.getPostTime()));
 
-        NotificationLog.add(new NotificationLog.Entry(source, name, amount, time));
+        Matcher am = AMOUNT.matcher(full);
+        if (am.find()) {
+            // ---- Payment: needs an amount ----
+            if (ONLY_RECEIVED) {
+                if (!RECEIVED.matcher(full).find()) return;
+                if (NOT_RECEIVED.matcher(full).find()) return;
+            }
+            String amount = "\u20B9" + am.group(1);
+            String name = extractName(full);   // optional
+            NotificationLog.add(new NotificationLog.Entry(source, name, amount, time));
+            announce(sbn.getKey(), appName + ". " + title + ". " + text);
+        } else {
+            // ---- Normal message: no amount ----
+            if (OTP.matcher(full).find()) return;   // never keep OTP messages
 
-        SharedPreferences prefs = getSharedPreferences("prefs", MODE_PRIVATE);
-        if (prefs.getBoolean("speak", true) && ttsReady) {
-            tts.speak(appName + ". " + title + ". " + text,
-                    TextToSpeech.QUEUE_ADD, null, sbn.getKey());
+            String message = SMS_APPS.contains(pkg)
+                    ? text : (title.isEmpty() ? text : title + ": " + text);
+            if (message.isEmpty()) message = title;
+
+            NotificationLog.addMessage(new NotificationLog.Msg(source, message, time));
+            announce(sbn.getKey(), source + ". " + message);
         }
     }
 

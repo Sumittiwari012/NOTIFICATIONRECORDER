@@ -8,6 +8,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -20,7 +22,10 @@ import androidx.appcompat.app.AppCompatActivity;
 
 public class MainActivity extends AppCompatActivity {
 
-    private TableLayout table;
+    private TableLayout table;       // payments
+    private LinearLayout msgBox;     // normal messages
+    private ScrollView payScroll, msgScroll;
+    private Button payTab, msgTab;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -53,20 +58,48 @@ public class MainActivity extends AppCompatActivity {
         speak.setOnCheckedChangeListener((b, on) ->
                 prefs.edit().putBoolean("speak", on).apply());
 
+        // Two tabs: Payments | Normal messages
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.setOrientation(LinearLayout.HORIZONTAL);
+        payTab = new Button(this);
+        msgTab = new Button(this);
+        tabs.addView(payTab, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        tabs.addView(msgTab, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        payTab.setOnClickListener(v -> showTab(true));
+        msgTab.setOnClickListener(v -> showTab(false));
+
         table = new TableLayout(this);
         table.setStretchAllColumns(true);
         table.setPadding(0, 24, 0, 0);
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(table);
+        payScroll = new ScrollView(this);
+        payScroll.addView(table);
+
+        msgBox = new LinearLayout(this);
+        msgBox.setOrientation(LinearLayout.VERTICAL);
+        msgBox.setPadding(8, 24, 8, 0);
+        msgScroll = new ScrollView(this);
+        msgScroll.addView(msgBox);
 
         root.addView(grant);
         root.addView(battery);
         root.addView(speak);
-        root.addView(scroll);
+        root.addView(tabs);
+        root.addView(payScroll);
+        root.addView(msgScroll);
         setContentView(root);
 
+        showTab(true);
         NotificationLog.onChange = () -> runOnUiThread(this::render);
         render();
+    }
+
+    private void showTab(boolean payments) {
+        payScroll.setVisibility(payments ? View.VISIBLE : View.GONE);
+        msgScroll.setVisibility(payments ? View.GONE : View.VISIBLE);
+        payTab.setAlpha(payments ? 1f : 0.5f);
+        msgTab.setAlpha(payments ? 0.5f : 1f);
     }
 
     private TextView cell(String text, boolean bold) {
@@ -79,9 +112,15 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void render() {
+        payTab.setText("Payments (" + NotificationLog.items.size() + ")");
+        msgTab.setText("Normal messages (" + NotificationLog.messages.size() + ")");
+        renderPayments();
+        renderMessages();
+    }
+
+    private void renderPayments() {
         table.removeAllViews();
 
-        // Header
         TableRow header = new TableRow(this);
         header.addView(cell("Source", true));
         header.addView(cell("Name", true));
@@ -103,7 +142,6 @@ public class MainActivity extends AppCompatActivity {
             row.addView(cell(e.amount, true));
             table.addView(row);
 
-            // Date and time under each record
             TableRow timeRow = new TableRow(this);
             TextView time = new TextView(this);
             time.setText(e.time);
@@ -115,6 +153,39 @@ public class MainActivity extends AppCompatActivity {
             time.setLayoutParams(lp);
             timeRow.addView(time);
             table.addView(timeRow);
+        }
+    }
+
+    private void renderMessages() {
+        msgBox.removeAllViews();
+
+        if (NotificationLog.messages.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText("No normal messages yet.");
+            msgBox.addView(empty);
+            return;
+        }
+
+        for (NotificationLog.Msg m : NotificationLog.messages) {
+            TextView src = new TextView(this);
+            src.setText(m.source);
+            src.setTextSize(15f);
+            src.setTypeface(null, Typeface.BOLD);
+
+            TextView body = new TextView(this);
+            body.setText(m.message);   // complete message
+            body.setTextSize(15f);
+            body.setPadding(0, 4, 0, 4);
+
+            TextView time = new TextView(this);
+            time.setText(m.time);
+            time.setTextSize(12f);
+            time.setAlpha(0.6f);
+            time.setPadding(0, 0, 0, 32);
+
+            msgBox.addView(src);
+            msgBox.addView(body);
+            msgBox.addView(time);
         }
     }
 
