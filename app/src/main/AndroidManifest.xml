@@ -1,26 +1,41 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Needed for every API call -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+    <!-- Only needed because MainActivity asks for it. Remove it, and the
+         "Allow SMS access" button, if you don't want it. -->
+    <uses-permission android:name="android.permission.RECEIVE_SMS"/>
 
     <!-- Needed so app names resolve on Android 11+ -->
     <queries>
-        <intent><action android:name="android.intent.action.MAIN" /></intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN"/>
+        </intent>
     </queries>
 
     <application
         android:label="Notification Reader"
         android:theme="@style/Theme.AppCompat.DayNight">
 
-        <activity android:name=".MainActivity" android:exported="true">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
             <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- Was missing: MainActivity and LoginActivity both start it -->
+        <activity
+            android:name=".LoginActivity"
+            android:exported="false"/>
 
         <service
             android:name=".NotificationReaderService"
@@ -29,11 +44,12 @@
             android:foregroundServiceType="specialUse"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
-                <action android:name="android.service.notification.NotificationListenerService" />
+                <action android:name="android.service.notification.NotificationListenerService"/>
             </intent-filter>
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Reads incoming notifications aloud" />
+                android:value="Reads incoming notifications aloud"/>
         </service>
+
     </application>
 </manifest>

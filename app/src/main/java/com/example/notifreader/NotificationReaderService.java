@@ -206,6 +206,11 @@ public class NotificationReaderService extends NotificationListenerService
             String amount = "\u20B9" + am.group(1);
             String name = extractName(full);   // optional
             NotificationLog.add(new NotificationLog.Entry(source, name, amount, time));
+
+            // Send it to the server. The server matches it to the open QR request
+            // for this amount and ends that screen's wait. Pass the plain number
+            // (no rupee sign); ApiClient queues it and retries if the network is down.
+            ApiClient.sendTransaction(this, name, am.group(1), sbn.getPostTime());
             announce(sbn.getKey(), appName + ". " + title + ". " + text);
         } else {
             // ---- Normal messages tab: everything else ----
