@@ -21,8 +21,7 @@ import javax.crypto.spec.GCMParameterSpec;
  * Keystore (the key never leaves the device's secure storage) and the encrypted
  * text is kept in SharedPreferences. Needs no extra Gradle dependency.
  *
- * Used for: "cid" (the customer id), "pending" (payments not uploaded yet) and
- * "ambiguous" (payments waiting to be settled by hand).
+ * Used for: "cid" (the customer id) and "pending" (payments not uploaded yet).
  */
 public final class SecureStore {
 

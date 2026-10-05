@@ -8,10 +8,10 @@ public class NotificationLog {
 
     // A received UPI payment
     public static class Entry {
-        public final String source;  // UPI app it came from, e.g. "Google Pay"
+        public final String source;  // UPI app the notification came from (PhonePe, Google Pay, ...)
         public final String name;    // payer's name (may be empty)
         public final String amount;  // e.g. "₹1.00"
-        public final String note;    // transaction note starting with "GR" (may be empty)
+        public final String note;    // transaction note starting with GSC (empty if none)
         public final String time;    // date and time recorded
 
         public Entry(String source, String name, String amount, String note, String time) {

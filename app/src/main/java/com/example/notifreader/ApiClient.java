@@ -31,7 +31,6 @@ import java.util.concurrent.Executors;
  *
  *  Phone app (notification reader)
  *    sendTransaction()       -> POST Payments/AddTransaction      (queued + retried)
- *    getAmbiguous()/confirmPayment() -> settle "ambiguous" payments by hand
  *
  *  QR screen (use these if the QR screen lives in this app)
  *    createPaymentRequest()  -> POST Payments/CreatePaymentRequest
@@ -63,7 +62,7 @@ public class ApiClient {
     public interface DataCallback { void done(boolean ok, String message, JSONObject data); }
 
     /** Called (on the main thread) after each payment upload gets an answer from the server.
-     *  status: confirmed | recorded | duplicate | ambiguous | ignored */
+     *  status: confirmed | recorded | duplicate | ignored */
     public interface TxListener { void onResult(String status, JSONObject body); }
 
     private static volatile TxListener txListener;
@@ -184,8 +183,8 @@ public class ApiClient {
     }
 
     // Queue a received payment (with the hidden customer id) and try to upload it.
-    // note = the transaction note read from the notification (starts with "GR"); the
-    // server matches the payment to its QR request by this value.
+    // note = the transaction note that starts with GSC ("" if there was none). The
+    // server matches the payment to its QR request by this invoice number.
     public static void sendTransaction(Context ctx, String name, String amount,
                                        String note, long timeMillis) {
         final Context app = ctx.getApplicationContext();
@@ -196,8 +195,8 @@ public class ApiClient {
                 JSONObject tx = new JSONObject();
                 tx.put("customerId", cid);
                 tx.put("name", name == null ? "" : name);
-                tx.put("amount", new BigDecimal(amount.replace(",", "")));
                 tx.put("invoiceNumber", note == null ? "" : note);
+                tx.put("amount", new BigDecimal(amount.replace(",", "")));
                 tx.put("transactionDateTime", iso(timeMillis));   // UTC; the server converts to IST
 
                 JSONArray arr = new JSONArray(SecureStore.getOr(app, "pending", "[]"));
@@ -225,7 +224,7 @@ public class ApiClient {
                 Result r = post("Payments/AddTransaction", tx);
                 if (r.code >= 500) return;      // server trouble: try again later
 
-                // 200 = handled (confirmed / recorded / duplicate / ambiguous / ignored)
+                // 200 = handled (confirmed / recorded / duplicate / ignored)
                 // 4xx = bad data: drop it so it can't block the queue
                 if (r.code == 200) handleOutcome(c, tx, r.body);
 
@@ -243,15 +242,6 @@ public class ApiClient {
             JSONObject o = new JSONObject(body);
             String status = o.optString("status", "");
 
-            if ("ambiguous".equals(status)) {
-                // The server stored nothing for this payment, so keep it here
-                // until the operator settles it with confirmPayment().
-                o.put("receivedAt", tx.optString("transactionDateTime"));
-                JSONArray list = new JSONArray(SecureStore.getOr(c, "ambiguous", "[]"));
-                list.put(o);
-                SecureStore.put(c, "ambiguous", list.toString());
-            }
-
             final TxListener l = txListener;
             if (l != null) {
                 new Handler(Looper.getMainLooper()).post(() -> l.onResult(status, o));
@@ -259,70 +249,13 @@ public class ApiClient {
         } catch (Exception ignored) { }
     }
 
-    // ---------- ambiguous payments (settled by hand) ----------
-
-    /** Payments the server could not match to a single QR request. Each item has:
-     *  payer {name, amount}, matches [{requestId, name, amount, requestedAt}], receivedAt. */
-    public static JSONArray getAmbiguous(Context ctx) {
-        try {
-            return new JSONArray(SecureStore.getOr(ctx.getApplicationContext(), "ambiguous", "[]"));
-        } catch (Exception e) {
-            return new JSONArray();
-        }
-    }
-
-    /** Operator picks which QR request a payment belongs to.
-     *  receivedAt = the "receivedAt" value of the ambiguous item being settled (or null). */
-    public static void confirmPayment(Context ctx, long requestId, String payerName,
-                                      String receivedAt, Callback cb) {
-        final Context app = ctx.getApplicationContext();
-        AUTH.execute(() -> {
-            long cid = customerId(app);
-            if (cid <= 0) { reply(cb, false, "Please log in again."); return; }
-            try {
-                JSONObject j = new JSONObject();
-                j.put("customerId", cid);
-                j.put("requestId", requestId);
-                j.put("payerName", payerName == null ? "" : payerName);
-                Result r = post("Payments/ConfirmPayment", j);
-                if (r.code == 200) {
-                    // Remove it from the local list first, then tell the screen,
-                    // so the screen redraws without the settled item.
-                    removeAmbiguous(app, receivedAt, () -> reply(cb, true, "Payment confirmed."));
-                } else {
-                    reply(cb, false, errorText(r.body, "Could not confirm (" + r.code + ")."));
-                }
-            } catch (Exception e) {
-                reply(cb, false, "Network error. Check your connection.");
-            }
-        });
-    }
-
-    private static void removeAmbiguous(Context app, String receivedAt, Runnable then) {
-        IO.execute(() -> {
-            try {
-                if (receivedAt == null) return;
-                JSONArray list = new JSONArray(SecureStore.getOr(app, "ambiguous", "[]"));
-                JSONArray keep = new JSONArray();
-                for (int i = 0; i < list.length(); i++) {
-                    JSONObject item = list.getJSONObject(i);
-                    if (!receivedAt.equals(item.optString("receivedAt"))) keep.put(item);
-                }
-                SecureStore.put(app, "ambiguous", keep.toString());
-            } catch (Exception ignored) {
-            } finally {
-                if (then != null) then.run();
-            }
-        });
-    }
-
     // ---------- QR payment flow (QR screen) ----------
 
     /** Registers the amount and starts the payment window.
      *  invoiceNumber is required: the payment is matched to this request by it.
      *  data has: requestId, amount, invoiceNumber, windowSeconds, expiresAt */
-    public static void createPaymentRequest(Context ctx, String name, String amount,
-                                            String invoiceNumber, DataCallback cb) {
+    public static void createPaymentRequest(Context ctx, String name, String invoiceNumber,
+                                            String amount, DataCallback cb) {
         final Context app = ctx.getApplicationContext();
         AUTH.execute(() -> {
             long cid = customerId(app);

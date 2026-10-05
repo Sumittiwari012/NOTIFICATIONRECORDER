@@ -7,27 +7,19 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
-import android.view.View;
-import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TableLayout;
 import android.widget.TableRow;
 import android.widget.TextView;
-import android.widget.Toast;
-
-import org.json.JSONArray;
-import org.json.JSONObject;
 
 import androidx.appcompat.app.AppCompatActivity;
 
 public class MainActivity extends AppCompatActivity {
 
     private TableLayout table;       // received UPI payments
-    private LinearLayout ambBox;     // payments that need to be settled by hand
-    private ScrollView payScroll, ambScroll;
-    private Button payTab, ambTab;
+    private TextView heading;        // "Payments (n)"
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -40,7 +32,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        // On Android 13+ the "running" notification needs permission
+        // On Android 13+ the "running" notification needs this permission
         askPermissions();
 
         LinearLayout root = new LinearLayout(this);
@@ -66,50 +58,28 @@ public class MainActivity extends AppCompatActivity {
             finish();
         });
 
-        // Two tabs: Payments | Needs action
-        LinearLayout tabs = new LinearLayout(this);
-        tabs.setOrientation(LinearLayout.HORIZONTAL);
-        payTab = new Button(this);
-        ambTab = new Button(this);
-        tabs.addView(payTab, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        tabs.addView(ambTab, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        payTab.setOnClickListener(v -> showTab(0));
-        ambTab.setOnClickListener(v -> showTab(1));
+        heading = new TextView(this);
+        heading.setTextSize(18f);
+        heading.setTypeface(null, Typeface.BOLD);
+        heading.setPadding(0, 32, 0, 0);
 
         table = new TableLayout(this);
         table.setStretchAllColumns(true);
         table.setPadding(0, 24, 0, 0);
-        payScroll = new ScrollView(this);
-        payScroll.addView(table);
-
-        ambBox = new LinearLayout(this);
-        ambBox.setOrientation(LinearLayout.VERTICAL);
-        ambBox.setPadding(8, 24, 8, 0);
-        ambScroll = new ScrollView(this);
-        ambScroll.addView(ambBox);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(table);
 
         root.addView(grant);
         root.addView(battery);
         root.addView(logout);
-        root.addView(tabs);
-        root.addView(payScroll);
-        root.addView(ambScroll);
+        root.addView(heading);
+        root.addView(scroll);
         setContentView(root);
 
-        showTab(0);
         NotificationLog.onChange = () -> runOnUiThread(this::render);
 
-        // The server's answer for each uploaded payment
-        ApiClient.setTxListener((status, body) -> {
-            if ("ambiguous".equals(status)) {
-                Toast.makeText(this,
-                        "A payment matches several QR requests. Open \"Needs action\".",
-                        Toast.LENGTH_LONG).show();
-            }
-            render();
-        });
+        // The server's answer for each uploaded payment: just redraw
+        ApiClient.setTxListener((status, body) -> render());
         render();
     }
 
@@ -117,14 +87,6 @@ public class MainActivity extends AppCompatActivity {
         if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
         }
-    }
-
-    // 0 = payments, 1 = needs action (ambiguous)
-    private void showTab(int tab) {
-        payScroll.setVisibility(tab == 0 ? View.VISIBLE : View.GONE);
-        ambScroll.setVisibility(tab == 1 ? View.VISIBLE : View.GONE);
-        payTab.setAlpha(tab == 0 ? 1f : 0.5f);
-        ambTab.setAlpha(tab == 1 ? 1f : 0.5f);
     }
 
     private TextView cell(String text, boolean bold) {
@@ -137,75 +99,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void render() {
-        payTab.setText("Payments (" + NotificationLog.items.size() + ")");
-        ambTab.setText("Needs action (" + ApiClient.getAmbiguous(this).length() + ")");
-        renderPayments();
-        renderAmbiguous();
-    }
-
-    // Time part of "2026-10-03T14:05:11.123" -> "14:05:11"
-    private String clock(String iso) {
-        if (iso == null) return "";
-        int t = iso.indexOf('T');
-        return (t >= 0 && iso.length() >= t + 9) ? iso.substring(t + 1, t + 9) : iso;
-    }
-
-    // Payments the server could not match to a single QR request. Tap the request
-    // the payment belongs to.
-    private void renderAmbiguous() {
-        ambBox.removeAllViews();
-        JSONArray list = ApiClient.getAmbiguous(this);
-
-        if (list.length() == 0) {
-            TextView empty = new TextView(this);
-            empty.setText("Nothing to settle.");
-            ambBox.addView(empty);
-            return;
-        }
-
-        for (int i = 0; i < list.length(); i++) {
-            JSONObject item = list.optJSONObject(i);
-            if (item == null) continue;
-            JSONObject payer = item.optJSONObject("payer");
-            final String payerName = payer == null ? "" : payer.optString("name", "");
-            final String amount = payer == null ? "" : payer.optString("amount", "");
-            final String receivedAt = item.optString("receivedAt", null);
-
-            TextView head = new TextView(this);
-            head.setText("\u20B9" + amount + " from " + (payerName.isEmpty() ? "Unknown" : payerName)
-                    + "\nSeveral QR requests have this amount. Who is it for?");
-            head.setTextSize(15f);
-            head.setTypeface(null, Typeface.BOLD);
-            head.setPadding(0, 16, 0, 8);
-            ambBox.addView(head);
-
-            JSONArray matches = item.optJSONArray("matches");
-            if (matches == null) continue;
-            for (int k = 0; k < matches.length(); k++) {
-                JSONObject m = matches.optJSONObject(k);
-                if (m == null) continue;
-                final long requestId = m.optLong("requestId");
-                String who = m.optString("name", "");
-                Button pick = new Button(this);
-                pick.setText((who.isEmpty() ? "Request #" + requestId : who)
-                        + "  (QR shown at " + clock(m.optString("requestedAt", "")) + ")");
-                pick.setOnClickListener(v -> {
-                    pick.setEnabled(false);
-                    ApiClient.confirmPayment(this, requestId, payerName, receivedAt, (ok, msg) -> {
-                        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
-                        pick.setEnabled(true);
-                        render();
-                    });
-                });
-                ambBox.addView(pick);
-            }
-        }
-    }
-
-    // Payments table: Source | Name | Amount | Note, with the time under each row
-    private void renderPayments() {
+        heading.setText("Payments (" + NotificationLog.items.size() + ")");
         table.removeAllViews();
 
+        // Source | Name | Amount | Note
         TableRow header = new TableRow(this);
         header.addView(cell("Source", true));
         header.addView(cell("Name", true));
@@ -215,7 +112,7 @@ public class MainActivity extends AppCompatActivity {
 
         if (NotificationLog.items.isEmpty()) {
             TextView empty = new TextView(this);
-            empty.setText("No payments recorded yet.");
+            empty.setText("No UPI payments recorded yet.");
             empty.setPadding(8, 24, 8, 8);
             table.addView(empty);
             return;
@@ -247,7 +144,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         ApiClient.flushPending(this);   // retry any uploads that failed earlier
-        if (ambBox != null) render();   // the service may have saved new ones meanwhile
+        if (table != null) render();    // the service may have saved new ones meanwhile
     }
 
     @Override

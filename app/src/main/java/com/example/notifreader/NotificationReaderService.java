@@ -20,9 +20,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Records ONLY "money received" notifications from UPI apps.
- * Everything else (other apps, SMS, normal messages, OTPs) is ignored completely:
- * nothing is stored, shown, uploaded or spoken.
+ * Listens to notifications, but only keeps RECEIVED PAYMENTS from UPI apps
+ * (PhonePe, Google Pay, Paytm, ...). Everything else is ignored: other apps,
+ * SMS, normal messages and OTPs are never stored, shown or uploaded.
+ *
+ * Each payment is split into: source (the UPI app), name (the payer), amount and
+ * note (the transaction note that starts with GSC).
  */
 public class NotificationReaderService extends NotificationListenerService {
 
@@ -30,17 +33,19 @@ public class NotificationReaderService extends NotificationListenerService {
 
     private final Set<String> seen = new HashSet<>();
 
-    // The UPI apps whose payment notifications are recorded. To support another app,
-    // add its package name here.
+    // The only apps that are read. To add another UPI app, add its package name here
+    // (find it with:  adb shell pm list packages | grep -i <app name>).
     private static final Set<String> UPI_APPS = new HashSet<>(Arrays.asList(
-            "com.phonepe.app",                                  // PhonePe
-            "com.google.android.apps.nbu.paisa.user",           // Google Pay
-            "com.google.android.apps.nbu.paisa.merchant",       // Google Pay for Business
-            "net.one97.paytm",                                  // Paytm
-            "in.org.npci.upiapp",                               // BHIM
-            "com.dreamplug.androidapp",                         // CRED
-            "com.freecharge.android",                           // Freecharge
-            "com.mobikwik_new"                                  // MobiKwik
+            "com.phonepe.app",                             // PhonePe
+            "com.google.android.apps.nbu.paisa.user",      // Google Pay
+            "com.google.android.apps.nbu.paisa.merchant",  // Google Pay for Business
+            "net.one97.paytm",                             // Paytm
+            "in.org.npci.upiapp",                          // BHIM
+            "com.sbi.upi",                                 // BHIM SBI Pay
+            "com.dreamplug.androidapp",                    // CRED
+            "in.amazon.mShop.android.shopping",            // Amazon Pay (inside the Amazon app)
+            "com.freecharge.android",                      // Freecharge
+            "com.mobikwik_new"                             // MobiKwik
     ));
 
     private static final Pattern AMOUNT = Pattern.compile(
@@ -65,12 +70,12 @@ public class NotificationReaderService extends NotificationListenerService {
                     + "(?=\\s+(?:on|via|using|to|ref|upi|vpa|a/c|with)\\b|[.,;(]|\\d|$)",
             Pattern.CASE_INSENSITIVE);
 
-    // The transaction note: a word that starts with "GR" and contains a digit,
-    // e.g. "GR1306202627". The digit requirement keeps names like "GRACE" from matching.
+    // The transaction note: a word that starts with GSC, e.g. "GSC-1306-2026/27".
+    // The server removes the dashes and slashes and compares what is left.
     private static final Pattern NOTE = Pattern.compile(
-            "\\b(GR[A-Za-z0-9]*[0-9][A-Za-z0-9]*)\\b", Pattern.CASE_INSENSITIVE);
+            "(?<![A-Za-z0-9])GSC[A-Za-z0-9._/\\-]*", Pattern.CASE_INSENSITIVE);
 
-    // OTPs are never recorded
+    // Anything with an OTP in it is ignored
     private static final Pattern OTP = Pattern.compile(
             "(?<![a-z])otp(?![a-z])|one[- ]time password", Pattern.CASE_INSENSITIVE);
 
@@ -95,8 +100,8 @@ public class NotificationReaderService extends NotificationListenerService {
                     CHANNEL_ID, "Reader status", NotificationManager.IMPORTANCE_LOW));
 
             Notification n = new Notification.Builder(this, CHANNEL_ID)
-                    .setContentTitle("Payment reader is running")
-                    .setContentText("Watching for UPI payments")
+                    .setContentTitle("UPI payment reader is running")
+                    .setContentText("Watching for received UPI payments")
                     .setSmallIcon(android.R.drawable.ic_dialog_info)
                     .setOngoing(true)
                     .build();
@@ -126,16 +131,25 @@ public class NotificationReaderService extends NotificationListenerService {
         return name;
     }
 
-    // Returns the transaction note (starts with "GR", upper case), or "" if there is none
+    // Returns the transaction note that starts with GSC, or "" if there is none
     private String extractNote(String full) {
         Matcher m = NOTE.matcher(full);
-        return m.find() ? m.group(1).toUpperCase(Locale.ROOT) : "";
+        if (!m.find()) return "";
+        String note = m.group();
+        // drop punctuation that belongs to the sentence, not the note
+        note = note.replaceAll("[._/\\-]+$", "");
+        return note;
+    }
+
+    private static String str(CharSequence cs) {
+        return cs == null ? "" : cs.toString().trim();
     }
 
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
-        // Only UPI apps are looked at; everything else is dropped straight away
         String pkg = sbn.getPackageName();
+
+        // Only UPI apps are read. Everything else is ignored right away.
         if (!UPI_APPS.contains(pkg)) return;
 
         int flags = sbn.getNotification().flags;
@@ -143,18 +157,42 @@ public class NotificationReaderService extends NotificationListenerService {
         if ((flags & Notification.FLAG_GROUP_SUMMARY) != 0) return;
 
         Bundle extras = sbn.getNotification().extras;
-        CharSequence t = extras.getCharSequence(Notification.EXTRA_TITLE);
-        CharSequence x = extras.getCharSequence(Notification.EXTRA_TEXT);
-        CharSequence b = extras.getCharSequence(Notification.EXTRA_BIG_TEXT);
-        String title = t == null ? "" : t.toString().trim();
-        String text = x == null ? "" : x.toString().trim();
+        String title = str(extras.getCharSequence(Notification.EXTRA_TITLE));
+        String text = str(extras.getCharSequence(Notification.EXTRA_TEXT));
+        String big = str(extras.getCharSequence(Notification.EXTRA_BIG_TEXT));
+        String sub = str(extras.getCharSequence(Notification.EXTRA_SUB_TEXT));
+        String info = str(extras.getCharSequence(Notification.EXTRA_INFO_TEXT));
+
         // Prefer the expanded text: it holds the complete message
-        if (b != null && b.toString().trim().length() > text.length()) {
-            text = b.toString().trim();
+        if (big.length() > text.length()) text = big;
+
+        // Inbox-style notifications keep extra lines here; the note can be on one of them
+        StringBuilder lines = new StringBuilder();
+        CharSequence[] arr = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES);
+        if (arr != null) {
+            for (CharSequence c : arr) lines.append(' ').append(str(c));
         }
+
         if (title.isEmpty() && text.isEmpty()) return;
 
-        // Source = the UPI app's name (e.g. "Google Pay", "PhonePe")
+        // Ignore the same notification being posted again (updates)
+        String id = sbn.getKey() + sbn.getPostTime();
+        if (seen.size() > 500) seen.clear();
+        if (!seen.add(id)) return;
+
+        String full = title + " " + text + " " + sub + " " + info + lines;
+
+        // OTPs are never stored or uploaded
+        if (OTP.matcher(full).find()) return;
+
+        // A payment = has an amount AND says money was received
+        Matcher am = AMOUNT.matcher(full);
+        boolean isPayment = am.find()
+                && RECEIVED.matcher(full).find()
+                && !NOT_RECEIVED.matcher(full).find();
+        if (!isPayment) return;   // normal messages are not caught at all
+
+        // Source = the UPI app's name (PhonePe, Google Pay, Paytm, ...)
         String source;
         try {
             source = getPackageManager().getApplicationLabel(
@@ -164,37 +202,18 @@ public class NotificationReaderService extends NotificationListenerService {
         }
         if (source.isEmpty()) return;
 
-        // Ignore the same notification being posted again (updates)
-        String id = sbn.getKey() + sbn.getPostTime();
-        if (seen.size() > 500) seen.clear();
-        if (!seen.add(id)) return;
-
-        String full = title + " " + text;
-
-        // OTPs are never recorded
-        if (OTP.matcher(full).find()) return;
-
-        // A payment = has an amount AND says money was received. Anything else
-        // from a UPI app (offers, reminders, money sent out) is ignored.
-        Matcher am = AMOUNT.matcher(full);
-        boolean isPayment = am.find()
-                && RECEIVED.matcher(full).find()
-                && !NOT_RECEIVED.matcher(full).find();
-        if (!isPayment) return;
-
-        String amountNumber = am.group(1);               // plain number, e.g. "1.00"
-        String amount = "\u20B9" + amountNumber;         // for display
-        String name = extractName(full);                 // payer's name (may be empty)
-        String note = extractNote(full);                 // "GR..." note (may be empty)
+        String amount = "\u20B9" + am.group(1);
+        String name = extractName(full);   // optional
+        String note = extractNote(full);   // starts with GSC, "" if the payer sent none
 
         String time = new SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault())
                 .format(new Date(sbn.getPostTime()));
 
         NotificationLog.add(new NotificationLog.Entry(source, name, amount, note, time));
 
-        // Send it to the server. The server matches it to the open QR request with the
-        // same invoice number (the note) and ends that screen's wait. ApiClient queues
-        // it and retries if the network is down.
-        ApiClient.sendTransaction(this, name, amountNumber, note, sbn.getPostTime());
+        // Send it to the server. The server matches it to the open QR request with
+        // the same invoice number (the note). Pass the plain number (no rupee sign);
+        // ApiClient queues it and retries if the network is down.
+        ApiClient.sendTransaction(this, name, am.group(1), note, sbn.getPostTime());
     }
 }
