@@ -2,7 +2,6 @@ package com.example.notifreader;
 
 import android.Manifest;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
@@ -13,7 +12,6 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
-import android.widget.Switch;
 import android.widget.TableLayout;
 import android.widget.TableRow;
 import android.widget.TextView;
@@ -26,11 +24,10 @@ import androidx.appcompat.app.AppCompatActivity;
 
 public class MainActivity extends AppCompatActivity {
 
-    private TableLayout table;       // payments
-    private LinearLayout msgBox;     // normal messages
+    private TableLayout table;       // received UPI payments
     private LinearLayout ambBox;     // payments that need to be settled by hand
-    private ScrollView payScroll, msgScroll, ambScroll;
-    private Button payTab, msgTab, ambTab;
+    private ScrollView payScroll, ambScroll;
+    private Button payTab, ambTab;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -42,9 +39,8 @@ public class MainActivity extends AppCompatActivity {
             finish();
             return;
         }
-        SharedPreferences prefs = getSharedPreferences("prefs", MODE_PRIVATE);
 
-        // Ask for SMS access (and, on Android 13+, the "running" notification)
+        // On Android 13+ the "running" notification needs permission
         askPermissions();
 
         LinearLayout root = new LinearLayout(this);
@@ -62,10 +58,6 @@ public class MainActivity extends AppCompatActivity {
                 Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
                 Uri.parse("package:" + getPackageName()))));
 
-        Button sms = new Button(this);
-        sms.setText("Allow SMS access");
-        sms.setOnClickListener(v -> askPermissions());
-
         Button logout = new Button(this);
         logout.setText("Log out");
         logout.setOnClickListener(v -> {
@@ -74,39 +66,23 @@ public class MainActivity extends AppCompatActivity {
             finish();
         });
 
-        Switch speak = new Switch(this);
-        speak.setText("Read notifications aloud");
-        speak.setChecked(prefs.getBoolean("speak", true));
-        speak.setOnCheckedChangeListener((b, on) ->
-                prefs.edit().putBoolean("speak", on).apply());
-
-        // Two tabs: Payments | Normal messages
+        // Two tabs: Payments | Needs action
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
         payTab = new Button(this);
-        msgTab = new Button(this);
         ambTab = new Button(this);
         tabs.addView(payTab, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        tabs.addView(msgTab, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         tabs.addView(ambTab, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         payTab.setOnClickListener(v -> showTab(0));
-        msgTab.setOnClickListener(v -> showTab(1));
-        ambTab.setOnClickListener(v -> showTab(2));
+        ambTab.setOnClickListener(v -> showTab(1));
 
         table = new TableLayout(this);
         table.setStretchAllColumns(true);
         table.setPadding(0, 24, 0, 0);
         payScroll = new ScrollView(this);
         payScroll.addView(table);
-
-        msgBox = new LinearLayout(this);
-        msgBox.setOrientation(LinearLayout.VERTICAL);
-        msgBox.setPadding(8, 24, 8, 0);
-        msgScroll = new ScrollView(this);
-        msgScroll.addView(msgBox);
 
         ambBox = new LinearLayout(this);
         ambBox.setOrientation(LinearLayout.VERTICAL);
@@ -116,12 +92,9 @@ public class MainActivity extends AppCompatActivity {
 
         root.addView(grant);
         root.addView(battery);
-        root.addView(sms);
         root.addView(logout);
-        root.addView(speak);
         root.addView(tabs);
         root.addView(payScroll);
-        root.addView(msgScroll);
         root.addView(ambScroll);
         setContentView(root);
 
@@ -142,28 +115,22 @@ public class MainActivity extends AppCompatActivity {
 
     private void askPermissions() {
         if (Build.VERSION.SDK_INT >= 33) {
-            requestPermissions(new String[]{
-                    Manifest.permission.POST_NOTIFICATIONS,
-                    Manifest.permission.RECEIVE_SMS}, 1);
-        } else {
-            requestPermissions(new String[]{Manifest.permission.RECEIVE_SMS}, 1);
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
         }
     }
 
-    // 0 = payments, 1 = normal messages, 2 = needs action (ambiguous)
+    // 0 = payments, 1 = needs action (ambiguous)
     private void showTab(int tab) {
         payScroll.setVisibility(tab == 0 ? View.VISIBLE : View.GONE);
-        msgScroll.setVisibility(tab == 1 ? View.VISIBLE : View.GONE);
-        ambScroll.setVisibility(tab == 2 ? View.VISIBLE : View.GONE);
+        ambScroll.setVisibility(tab == 1 ? View.VISIBLE : View.GONE);
         payTab.setAlpha(tab == 0 ? 1f : 0.5f);
-        msgTab.setAlpha(tab == 1 ? 1f : 0.5f);
-        ambTab.setAlpha(tab == 2 ? 1f : 0.5f);
+        ambTab.setAlpha(tab == 1 ? 1f : 0.5f);
     }
 
     private TextView cell(String text, boolean bold) {
         TextView tv = new TextView(this);
         tv.setText(text);
-        tv.setTextSize(15f);
+        tv.setTextSize(14f);
         tv.setPadding(8, 12, 8, 4);
         if (bold) tv.setTypeface(null, Typeface.BOLD);
         return tv;
@@ -171,10 +138,8 @@ public class MainActivity extends AppCompatActivity {
 
     private void render() {
         payTab.setText("Payments (" + NotificationLog.items.size() + ")");
-        msgTab.setText("Messages (" + NotificationLog.messages.size() + ")");
         ambTab.setText("Needs action (" + ApiClient.getAmbiguous(this).length() + ")");
         renderPayments();
-        renderMessages();
         renderAmbiguous();
     }
 
@@ -237,6 +202,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    // Payments table: Source | Name | Amount | Note, with the time under each row
     private void renderPayments() {
         table.removeAllViews();
 
@@ -244,6 +210,7 @@ public class MainActivity extends AppCompatActivity {
         header.addView(cell("Source", true));
         header.addView(cell("Name", true));
         header.addView(cell("Amount", true));
+        header.addView(cell("Note", true));
         table.addView(header);
 
         if (NotificationLog.items.isEmpty()) {
@@ -259,6 +226,7 @@ public class MainActivity extends AppCompatActivity {
             row.addView(cell(e.source, false));
             row.addView(cell(e.name.isEmpty() ? "-" : e.name, false));
             row.addView(cell(e.amount, true));
+            row.addView(cell(e.note.isEmpty() ? "-" : e.note, false));
             table.addView(row);
 
             TableRow timeRow = new TableRow(this);
@@ -268,43 +236,10 @@ public class MainActivity extends AppCompatActivity {
             time.setAlpha(0.6f);
             time.setPadding(8, 0, 8, 20);
             TableRow.LayoutParams lp = new TableRow.LayoutParams();
-            lp.span = 3;
+            lp.span = 4;
             time.setLayoutParams(lp);
             timeRow.addView(time);
             table.addView(timeRow);
-        }
-    }
-
-    private void renderMessages() {
-        msgBox.removeAllViews();
-
-        if (NotificationLog.messages.isEmpty()) {
-            TextView empty = new TextView(this);
-            empty.setText("No normal messages yet.");
-            msgBox.addView(empty);
-            return;
-        }
-
-        for (NotificationLog.Msg m : NotificationLog.messages) {
-            TextView src = new TextView(this);
-            src.setText(m.source);
-            src.setTextSize(15f);
-            src.setTypeface(null, Typeface.BOLD);
-
-            TextView body = new TextView(this);
-            body.setText(m.message);   // complete message
-            body.setTextSize(15f);
-            body.setPadding(0, 4, 0, 4);
-
-            TextView time = new TextView(this);
-            time.setText(m.time);
-            time.setTextSize(12f);
-            time.setAlpha(0.6f);
-            time.setPadding(0, 0, 0, 32);
-
-            msgBox.addView(src);
-            msgBox.addView(body);
-            msgBox.addView(time);
         }
     }
 

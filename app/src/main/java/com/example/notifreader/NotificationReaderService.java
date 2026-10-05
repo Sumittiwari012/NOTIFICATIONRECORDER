@@ -4,13 +4,11 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.ComponentName;
-import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.Bundle;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
-import android.speech.tts.TextToSpeech;
 
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
@@ -21,14 +19,29 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public class NotificationReaderService extends NotificationListenerService
-        implements TextToSpeech.OnInitListener {
+/**
+ * Records ONLY "money received" notifications from UPI apps.
+ * Everything else (other apps, SMS, normal messages, OTPs) is ignored completely:
+ * nothing is stored, shown, uploaded or spoken.
+ */
+public class NotificationReaderService extends NotificationListenerService {
 
     private static final String CHANNEL_ID = "reader_status";
 
-    private TextToSpeech tts;
-    private boolean ttsReady = false;
     private final Set<String> seen = new HashSet<>();
+
+    // The UPI apps whose payment notifications are recorded. To support another app,
+    // add its package name here.
+    private static final Set<String> UPI_APPS = new HashSet<>(Arrays.asList(
+            "com.phonepe.app",                                  // PhonePe
+            "com.google.android.apps.nbu.paisa.user",           // Google Pay
+            "com.google.android.apps.nbu.paisa.merchant",       // Google Pay for Business
+            "net.one97.paytm",                                  // Paytm
+            "in.org.npci.upiapp",                               // BHIM
+            "com.dreamplug.androidapp",                         // CRED
+            "com.freecharge.android",                           // Freecharge
+            "com.mobikwik_new"                                  // MobiKwik
+    ));
 
     private static final Pattern AMOUNT = Pattern.compile(
             "(?:\u20B9|\\b(?:rs|inr)\\.?)\\s?([0-9][0-9,]*(?:\\.[0-9]{1,2})?)",
@@ -52,38 +65,14 @@ public class NotificationReaderService extends NotificationListenerService
                     + "(?=\\s+(?:on|via|using|to|ref|upi|vpa|a/c|with)\\b|[.,;(]|\\d|$)",
             Pattern.CASE_INSENSITIVE);
 
-    // Normal messages containing "otp" are ignored
+    // The transaction note: a word that starts with "GR" and contains a digit,
+    // e.g. "GR1306202627". The digit requirement keeps names like "GRACE" from matching.
+    private static final Pattern NOTE = Pattern.compile(
+            "\\b(GR[A-Za-z0-9]*[0-9][A-Za-z0-9]*)\\b", Pattern.CASE_INSENSITIVE);
+
+    // OTPs are never recorded
     private static final Pattern OTP = Pattern.compile(
             "(?<![a-z])otp(?![a-z])|one[- ]time password", Pattern.CASE_INSENSITIVE);
-
-    // Placeholders shown when the Messaging app hides the real text:
-    // "Unread", "1 message", "New message", "5 messages | Unread", ...
-    private static final Pattern SUMMARY = Pattern.compile(
-            "^\\s*(?:\\d+\\s+(?:new\\s+)?messages?\\b.*"
-                    + "|(?:new\\s+)?messages?"
-                    + "|\\d*\\s*unread"
-                    + "|.{0,20}\\|\\s*unread"
-                    + "|(?:sensitive|content).{0,40}hidden.*)\\s*$",
-            Pattern.CASE_INSENSITIVE);
-
-    // SMS apps: bank alerts arrive here. Source shown = the SMS sender.
-    private static final Set<String> SMS_APPS = new HashSet<>(Arrays.asList(
-            "com.android.mms",                    // Xiaomi / MIUI "Messaging"
-            "com.google.android.apps.messaging",  // Google Messages
-            "com.samsung.android.messaging"       // Samsung Messages
-    ));
-
-    @Override
-    public void onCreate() {
-        super.onCreate();
-        tts = new TextToSpeech(this, this);
-    }
-
-    @Override
-    public void onInit(int status) {
-        ttsReady = status == TextToSpeech.SUCCESS;
-        if (ttsReady) tts.setLanguage(Locale.getDefault());
-    }
 
     // Called when Android connects us to the notification stream
     @Override
@@ -106,8 +95,8 @@ public class NotificationReaderService extends NotificationListenerService
                     CHANNEL_ID, "Reader status", NotificationManager.IMPORTANCE_LOW));
 
             Notification n = new Notification.Builder(this, CHANNEL_ID)
-                    .setContentTitle("Notification Reader is running")
-                    .setContentText("Reading your notifications aloud")
+                    .setContentTitle("Payment reader is running")
+                    .setContentText("Watching for UPI payments")
                     .setSmallIcon(android.R.drawable.ic_dialog_info)
                     .setOngoing(true)
                     .build();
@@ -122,7 +111,7 @@ public class NotificationReaderService extends NotificationListenerService
         }
     }
 
-    // Returns the account holder's name, or "" if none can be found
+    // Returns the payer's name, or "" if none can be found
     private String extractName(String full) {
         Matcher m = NAME_PAID.matcher(full);
         String name = m.find() ? m.group(1) : null;
@@ -137,18 +126,18 @@ public class NotificationReaderService extends NotificationListenerService
         return name;
     }
 
-    private void announce(String key, String what) {
-        SharedPreferences prefs = getSharedPreferences("prefs", MODE_PRIVATE);
-        if (prefs.getBoolean("speak", true) && ttsReady) {
-            if (what.length() > 3000) what = what.substring(0, 3000);
-            tts.speak(what, TextToSpeech.QUEUE_ADD, null, key);
-        }
+    // Returns the transaction note (starts with "GR", upper case), or "" if there is none
+    private String extractNote(String full) {
+        Matcher m = NOTE.matcher(full);
+        return m.find() ? m.group(1).toUpperCase(Locale.ROOT) : "";
     }
 
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
+        // Only UPI apps are looked at; everything else is dropped straight away
         String pkg = sbn.getPackageName();
-        if (pkg.equals(getPackageName())) return; // ignore our own
+        if (!UPI_APPS.contains(pkg)) return;
+
         int flags = sbn.getNotification().flags;
         if ((flags & Notification.FLAG_ONGOING_EVENT) != 0) return;
         if ((flags & Notification.FLAG_GROUP_SUMMARY) != 0) return;
@@ -164,23 +153,16 @@ public class NotificationReaderService extends NotificationListenerService
             text = b.toString().trim();
         }
         if (title.isEmpty() && text.isEmpty()) return;
-        if (SUMMARY.matcher(text).find()) return;
-        // An SMS notification with no text has nothing to record
-        if (SMS_APPS.contains(pkg) && text.isEmpty()) return;
 
-        // Source is required: drop if the app name can't be found
-        String appName;
+        // Source = the UPI app's name (e.g. "Google Pay", "PhonePe")
+        String source;
         try {
-            appName = getPackageManager().getApplicationLabel(
-                    getPackageManager().getApplicationInfo(pkg, 0)).toString();
+            source = getPackageManager().getApplicationLabel(
+                    getPackageManager().getApplicationInfo(pkg, 0)).toString().trim();
         } catch (Exception e) {
             return;
         }
-        if (appName.trim().isEmpty()) return;
-
-        // For SMS apps, the source is the sender (e.g. "Punjab National Bank")
-        String source = appName;
-        if (SMS_APPS.contains(pkg) && !title.isEmpty()) source = title;
+        if (source.isEmpty()) return;
 
         // Ignore the same notification being posted again (updates)
         String id = sbn.getKey() + sbn.getPostTime();
@@ -189,43 +171,30 @@ public class NotificationReaderService extends NotificationListenerService
 
         String full = title + " " + text;
 
-        // OTPs are never stored or announced
+        // OTPs are never recorded
         if (OTP.matcher(full).find()) return;
 
-        String time = new SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault())
-                .format(new Date(sbn.getPostTime()));
-
-        // A payment = has an amount AND says money was received
+        // A payment = has an amount AND says money was received. Anything else
+        // from a UPI app (offers, reminders, money sent out) is ignored.
         Matcher am = AMOUNT.matcher(full);
         boolean isPayment = am.find()
                 && RECEIVED.matcher(full).find()
                 && !NOT_RECEIVED.matcher(full).find();
+        if (!isPayment) return;
 
-        if (isPayment) {
-            // ---- Payments tab ----
-            String amount = "\u20B9" + am.group(1);
-            String name = extractName(full);   // optional
-            NotificationLog.add(new NotificationLog.Entry(source, name, amount, time));
+        String amountNumber = am.group(1);               // plain number, e.g. "1.00"
+        String amount = "\u20B9" + amountNumber;         // for display
+        String name = extractName(full);                 // payer's name (may be empty)
+        String note = extractNote(full);                 // "GR..." note (may be empty)
 
-            // Send it to the server. The server matches it to the open QR request
-            // for this amount and ends that screen's wait. Pass the plain number
-            // (no rupee sign); ApiClient queues it and retries if the network is down.
-            ApiClient.sendTransaction(this, name, am.group(1), sbn.getPostTime());
-            announce(sbn.getKey(), appName + ". " + title + ". " + text);
-        } else {
-            // ---- Normal messages tab: everything else ----
-            String message = SMS_APPS.contains(pkg)
-                    ? text : (title.isEmpty() ? text : title + ": " + text);
-            if (message.isEmpty()) message = title;
+        String time = new SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault())
+                .format(new Date(sbn.getPostTime()));
 
-            NotificationLog.addMessage(new NotificationLog.Msg(source, message, time));
-            announce(sbn.getKey(), source + ". " + message);
-        }
-    }
+        NotificationLog.add(new NotificationLog.Entry(source, name, amount, note, time));
 
-    @Override
-    public void onDestroy() {
-        if (tts != null) tts.shutdown();
-        super.onDestroy();
+        // Send it to the server. The server matches it to the open QR request with the
+        // same invoice number (the note) and ends that screen's wait. ApiClient queues
+        // it and retries if the network is down.
+        ApiClient.sendTransaction(this, name, amountNumber, note, sbn.getPostTime());
     }
 }

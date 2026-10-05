@@ -183,8 +183,11 @@ public class ApiClient {
         return f.format(new Date(millis));
     }
 
-    // Queue a received payment (with the hidden customer id) and try to upload it
-    public static void sendTransaction(Context ctx, String name, String amount, long timeMillis) {
+    // Queue a received payment (with the hidden customer id) and try to upload it.
+    // note = the transaction note read from the notification (starts with "GR"); the
+    // server matches the payment to its QR request by this value.
+    public static void sendTransaction(Context ctx, String name, String amount,
+                                       String note, long timeMillis) {
         final Context app = ctx.getApplicationContext();
         IO.execute(() -> {
             long cid = customerId(app);
@@ -194,6 +197,7 @@ public class ApiClient {
                 tx.put("customerId", cid);
                 tx.put("name", name == null ? "" : name);
                 tx.put("amount", new BigDecimal(amount.replace(",", "")));
+                tx.put("invoiceNumber", note == null ? "" : note);
                 tx.put("transactionDateTime", iso(timeMillis));   // UTC; the server converts to IST
 
                 JSONArray arr = new JSONArray(SecureStore.getOr(app, "pending", "[]"));
@@ -315,8 +319,10 @@ public class ApiClient {
     // ---------- QR payment flow (QR screen) ----------
 
     /** Registers the amount and starts the payment window.
-     *  data has: requestId, amount, windowSeconds, expiresAt */
-    public static void createPaymentRequest(Context ctx, String name, String amount, DataCallback cb) {
+     *  invoiceNumber is required: the payment is matched to this request by it.
+     *  data has: requestId, amount, invoiceNumber, windowSeconds, expiresAt */
+    public static void createPaymentRequest(Context ctx, String name, String amount,
+                                            String invoiceNumber, DataCallback cb) {
         final Context app = ctx.getApplicationContext();
         AUTH.execute(() -> {
             long cid = customerId(app);
@@ -325,6 +331,7 @@ public class ApiClient {
                 JSONObject j = new JSONObject();
                 j.put("customerId", cid);
                 j.put("name", name == null ? "" : name);
+                j.put("invoiceNumber", invoiceNumber == null ? "" : invoiceNumber);
                 j.put("amount", new BigDecimal(amount.replace(",", "")));
                 Result r = post("Payments/CreatePaymentRequest", j);
                 if (r.code == 200) {
